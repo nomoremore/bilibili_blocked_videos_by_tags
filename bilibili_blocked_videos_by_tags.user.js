@@ -1946,11 +1946,7 @@ function getVideoApiInfo(videoBv) {
             videoInfoDict[videoBv].videoDuration = videoApiInfoJson.data.duration;
 
             // API获取的视频分区
-            videoInfoDict[videoBv].videoPartitions =
-                videoApiInfoJson.data.tname_v2 ||
-                getVideoPartitionNameByTidV2(videoApiInfoJson.data.tid_v2 || videoApiInfoJson.data.tid) ||
-                videoApiInfoJson.data.tname ||
-                "";
+            videoInfoDict[videoBv].videoPartitions = getVideoPartitionNameFromApiData(videoApiInfoJson.data);
 
             // API获取的视频播放数
             videoInfoDict[videoBv].videoView = videoApiInfoJson.data.stat.view;
@@ -2008,6 +2004,16 @@ function getVideoApiInfo(videoBv) {
 // 按 v2 分区 ID 获取分区名称
 function getVideoPartitionNameByTidV2(tidV2) {
     return videoPartitionNameByTidV2[tidV2] || "";
+}
+
+// 从视频API数据中获取视频分区名称
+function getVideoPartitionNameFromApiData(videoApiInfoData) {
+    return (
+        videoApiInfoData.tname_v2 ||
+        getVideoPartitionNameByTidV2(videoApiInfoData.tid_v2 || videoApiInfoData.tid) ||
+        videoApiInfoData.tname ||
+        ""
+    );
 }
 
 // 处理匹配短时长视频
@@ -2418,6 +2424,433 @@ function getVideoApiTags(videoBv) {
             FuckYouBilibiliRecommendationSystem();
         })
         .catch((error) => consoleLogOutput(videoBv, "getVideoApiTags() Fetch错误:", error));
+}
+
+// 确保快速屏蔽相关数组存在
+function ensureQuickBlockArrays() {
+    blockedParameter.blockedNameOrUid_Array = blockedParameter.blockedNameOrUid_Array || [];
+    blockedParameter.blockedVideoPartitions_Array = blockedParameter.blockedVideoPartitions_Array || [];
+    blockedParameter.blockedTag_Array = blockedParameter.blockedTag_Array || [];
+}
+
+// 快速屏蔽匹配用的文本标准化
+function normalizeQuickBlockText(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
+// 查找快速屏蔽列表中的项目
+function findQuickBlockItemIndex(array, value) {
+    const normalizedValue = normalizeQuickBlockText(value);
+    return array.findIndex((item) => normalizeQuickBlockText(item) === normalizedValue);
+}
+
+// 保存快速屏蔽设置并立即刷新屏蔽效果
+function saveQuickBlockSettingsAndRefresh() {
+    GM_setValue("GM_blockedParameter", blockedParameter);
+    FuckYouBilibiliRecommendationSystem();
+}
+
+// 设置快速屏蔽弹窗按钮状态
+function setQuickBlockToggleButtonState(button, active, activeText, inactiveText) {
+    button.style.background = active ? "#4caf50" : "#3a3a3a";
+    button.style.color = "#fff";
+    button.title = active ? "点击从屏蔽列表中移除" : "点击添加到屏蔽列表";
+    button.textContent = active ? activeText : inactiveText;
+}
+
+// 创建快速屏蔽弹窗按钮
+function createQuickBlockModalButton(text) {
+    const button = document.createElement("button");
+    button.textContent = text;
+    button.style.padding = "8px 16px";
+    button.style.border = "none";
+    button.style.borderRadius = "4px";
+    button.style.cursor = "pointer";
+    button.style.transition = "all 0.2s ease";
+    button.style.fontSize = "14px";
+    button.style.fontWeight = "600";
+    return button;
+}
+
+// 创建快速屏蔽弹窗分区块
+function createQuickBlockSection(titleText) {
+    const section = document.createElement("div");
+    section.style.marginBottom = "24px";
+
+    const title = document.createElement("h3");
+    title.textContent = titleText;
+    title.style.margin = "0 0 12px 0";
+    title.style.fontSize = "18px";
+    title.style.color = "#ccc";
+    section.appendChild(title);
+
+    return section;
+}
+
+// 给视频卡片添加快速屏蔽按钮
+function injectQuickBlockButton(videoElement, videoBv) {
+    if (!videoElement || !videoBv || videoElement.dataset.quickBlockButtonAdded === "1") {
+        return;
+    }
+
+    videoElement.dataset.quickBlockButtonAdded = "1";
+
+    if (!videoElement.style.position) {
+        videoElement.style.position = "relative";
+    }
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "quickBlockButton";
+    button.textContent = "屏";
+    button.setAttribute("aria-label", "快速添加屏蔽");
+    button.style.position = "absolute";
+    button.style.right = "6px";
+    button.style.bottom = "6px";
+    button.style.zIndex = "20";
+    button.style.width = "30px";
+    button.style.height = "30px";
+    button.style.border = "none";
+    button.style.borderRadius = "6px";
+    button.style.background = "#0094ca";
+    button.style.color = "#fff";
+    button.style.cursor = "pointer";
+    button.style.boxShadow = "0 2px 8px rgba(0,0,0,0.3)";
+    button.style.fontSize = "14px";
+    button.style.fontWeight = "700";
+
+    button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (button.disabled) {
+            return;
+        }
+
+        button.disabled = true;
+        button.textContent = "...";
+
+        try {
+            await loadQuickBlockVideoInfo(videoBv);
+            showQuickBlockModal(videoBv);
+        } catch (error) {
+            consoleLogOutput(videoBv, "快速屏蔽信息获取失败:", error);
+            button.textContent = "失败";
+            setTimeout(() => {
+                button.textContent = "屏";
+            }, 1200);
+        } finally {
+            button.disabled = false;
+            if (button.textContent === "...") {
+                button.textContent = "屏";
+            }
+        }
+    });
+
+    videoElement.appendChild(button);
+}
+
+// 加载快速屏蔽弹窗所需的视频信息
+async function loadQuickBlockVideoInfo(videoBv) {
+    if (!videoInfoDict[videoBv]) {
+        videoInfoDict[videoBv] = {};
+    }
+
+    const videoInfo = videoInfoDict[videoBv];
+
+    if (!videoInfo.videoUpUid || !videoInfo.videoUpName || !videoInfo.videoPartitions) {
+        await fetchQuickBlockVideoInfo(videoBv);
+    }
+
+    if (!Array.isArray(videoInfo.videoTags)) {
+        await fetchQuickBlockVideoTags(videoBv);
+    }
+
+    return videoInfoDict[videoBv];
+}
+
+// 快速屏蔽弹窗使用的视频基础信息请求
+async function fetchQuickBlockVideoInfo(videoBv) {
+    const response = await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${videoBv}`);
+    const videoApiInfoJson = await response.json();
+
+    if (!videoApiInfoJson?.data) {
+        throw new Error("视频信息API未返回data");
+    }
+
+    const videoApiInfoData = videoApiInfoJson.data;
+    const videoInfo = videoInfoDict[videoBv];
+
+    videoInfo.videoTitle = videoInfo.videoTitle || videoApiInfoData.title;
+    videoInfo.videoUpName = videoApiInfoData.owner?.name || videoInfo.videoUpName;
+    videoInfo.videoUpUid = videoApiInfoData.owner?.mid || videoInfo.videoUpUid;
+    videoInfo.videoPartitions = getVideoPartitionNameFromApiData(videoApiInfoData);
+}
+
+// 快速屏蔽弹窗使用的视频标签请求
+async function fetchQuickBlockVideoTags(videoBv) {
+    try {
+        const response = await fetch(`https://api.bilibili.com/x/web-interface/view/detail/tag?bvid=${videoBv}`);
+        const videoApiTagsJson = await response.json();
+
+        if (Array.isArray(videoApiTagsJson?.data)) {
+            videoInfoDict[videoBv].videoTags = videoApiTagsJson.data
+                .map((tagItem) => tagItem.tag_name || "")
+                .map((tagName) => tagName.trim())
+                .filter(Boolean);
+        } else {
+            videoInfoDict[videoBv].videoTags = [];
+        }
+    } catch (error) {
+        videoInfoDict[videoBv].videoTags = [];
+        consoleLogOutput(videoBv, "快速屏蔽标签获取失败:", error);
+    }
+}
+
+// 显示快速屏蔽弹窗
+function showQuickBlockModal(videoBv) {
+    ensureQuickBlockArrays();
+
+    document.getElementById("quickBlockModal")?.remove();
+    document.getElementById("quickBlockOverlay")?.remove();
+
+    const videoInfo = videoInfoDict[videoBv] || {};
+
+    const overlay = document.createElement("div");
+    overlay.id = "quickBlockOverlay";
+    overlay.style.position = "fixed";
+    overlay.style.top = "0";
+    overlay.style.left = "0";
+    overlay.style.width = "100%";
+    overlay.style.height = "100%";
+    overlay.style.background = "rgba(0,0,0,0.7)";
+    overlay.style.zIndex = "999899";
+
+    const modal = document.createElement("div");
+    modal.id = "quickBlockModal";
+    modal.style.position = "fixed";
+    modal.style.top = "50%";
+    modal.style.left = "50%";
+    modal.style.transform = "translate(-50%, -50%)";
+    modal.style.zIndex = "999900";
+    modal.style.background = "#2a2a2a";
+    modal.style.padding = "24px";
+    modal.style.borderRadius = "8px";
+    modal.style.boxShadow = "0 4px 12px rgba(0,0,0,0.3)";
+    modal.style.maxWidth = "90vw";
+    modal.style.width = "860px";
+    modal.style.maxHeight = "82vh";
+    modal.style.overflow = "auto";
+    modal.style.color = "#fff";
+    modal.style.fontSize = "16px";
+
+    const closeModal = () => {
+        modal.remove();
+        overlay.remove();
+        document.removeEventListener("keydown", handleKeydown);
+    };
+
+    const handleKeydown = (event) => {
+        if (event.key === "Escape") {
+            closeModal();
+        }
+    };
+
+    overlay.addEventListener("click", closeModal);
+    document.addEventListener("keydown", handleKeydown);
+
+    const title = document.createElement("h2");
+    title.textContent = "快速添加屏蔽";
+    title.style.margin = "0 0 14px 0";
+    title.style.fontSize = "22px";
+    modal.appendChild(title);
+
+    const videoTitle = document.createElement("div");
+    videoTitle.textContent = videoInfo.videoTitle ? `标题：${videoInfo.videoTitle}` : `BV：${videoBv}`;
+    videoTitle.style.marginBottom = "20px";
+    videoTitle.style.color = "#ddd";
+    modal.appendChild(videoTitle);
+
+    appendQuickBlockUpSection(modal, videoInfo);
+    appendQuickBlockPartitionSection(modal, videoInfo);
+    appendQuickBlockTagsSection(modal, videoInfo);
+
+    const buttonContainer = document.createElement("div");
+    buttonContainer.style.display = "flex";
+    buttonContainer.style.justifyContent = "flex-end";
+
+    const closeButton = createQuickBlockModalButton("关闭");
+    closeButton.style.background = "#666";
+    closeButton.style.color = "#fff";
+    closeButton.addEventListener("click", closeModal);
+    buttonContainer.appendChild(closeButton);
+    modal.appendChild(buttonContainer);
+
+    document.body.appendChild(overlay);
+    document.body.appendChild(modal);
+}
+
+// 添加UP主快速屏蔽区域
+function appendQuickBlockUpSection(modal, videoInfo) {
+    const upName = videoInfo.videoUpName || "";
+    const upUid = videoInfo.videoUpUid ? String(videoInfo.videoUpUid) : "";
+
+    if (!upName && !upUid) {
+        return;
+    }
+
+    const section = createQuickBlockSection("UP主屏蔽");
+
+    const upInfo = document.createElement("div");
+    upInfo.textContent = upUid ? `${upName || "未知UP主"} (UID: ${upUid})` : upName;
+    upInfo.style.marginBottom = "12px";
+    upInfo.style.color = "#ddd";
+    section.appendChild(upInfo);
+
+    const button = createQuickBlockModalButton("");
+    const storedValue = upUid || upName;
+
+    const updateButton = () => {
+        const blockedByUid = upUid && blockedParameter.blockedNameOrUid_Array.includes(upUid);
+        const blockedByName = upName && blockedParameter.blockedNameOrUid_Array.includes(upName);
+        setQuickBlockToggleButtonState(button, blockedByUid || blockedByName, "已屏蔽此UP主", "屏蔽此UP主");
+    };
+
+    button.addEventListener("click", () => {
+        const uidIndex = upUid ? blockedParameter.blockedNameOrUid_Array.indexOf(upUid) : -1;
+        const nameIndex = upName ? blockedParameter.blockedNameOrUid_Array.indexOf(upName) : -1;
+
+        if (uidIndex === -1 && nameIndex === -1) {
+            blockedParameter.blockedNameOrUid_Array.push(storedValue);
+        } else {
+            if (uidIndex !== -1) {
+                blockedParameter.blockedNameOrUid_Array.splice(uidIndex, 1);
+            }
+            const updatedNameIndex = upName ? blockedParameter.blockedNameOrUid_Array.indexOf(upName) : -1;
+            if (updatedNameIndex !== -1) {
+                blockedParameter.blockedNameOrUid_Array.splice(updatedNameIndex, 1);
+            }
+        }
+
+        updateButton();
+        saveQuickBlockSettingsAndRefresh();
+    });
+
+    updateButton();
+    section.appendChild(button);
+    modal.appendChild(section);
+}
+
+// 添加分区快速屏蔽区域
+function appendQuickBlockPartitionSection(modal, videoInfo) {
+    const videoPartition = videoInfo.videoPartitions || "";
+    if (!videoPartition) {
+        return;
+    }
+
+    const section = createQuickBlockSection("视频分区");
+    const button = createQuickBlockModalButton("");
+
+    const updateButton = () => {
+        const isBlocked = findQuickBlockItemIndex(blockedParameter.blockedVideoPartitions_Array, videoPartition) !== -1;
+        setQuickBlockToggleButtonState(button, isBlocked, videoPartition, videoPartition);
+    };
+
+    button.addEventListener("click", () => {
+        const index = findQuickBlockItemIndex(blockedParameter.blockedVideoPartitions_Array, videoPartition);
+
+        if (index === -1) {
+            blockedParameter.blockedVideoPartitions_Array.push(videoPartition);
+        } else {
+            blockedParameter.blockedVideoPartitions_Array.splice(index, 1);
+        }
+
+        updateButton();
+        saveQuickBlockSettingsAndRefresh();
+    });
+
+    updateButton();
+    section.appendChild(button);
+    modal.appendChild(section);
+}
+
+// 添加标签快速屏蔽区域
+function appendQuickBlockTagsSection(modal, videoInfo) {
+    const tags = Array.isArray(videoInfo.videoTags) ? videoInfo.videoTags.filter(Boolean) : [];
+    const section = createQuickBlockSection("视频标签");
+
+    const description = document.createElement("p");
+    description.textContent = "绿色背景表示已添加到屏蔽列表，点击可移除；灰色背景表示未添加，点击可添加";
+    description.style.margin = "0 0 15px 0";
+    description.style.color = "#ccc";
+    section.appendChild(description);
+
+    if (tags.length === 0) {
+        const emptyText = document.createElement("div");
+        emptyText.textContent = "暂无可用标签或标签加载失败";
+        emptyText.style.color = "#aaa";
+        section.appendChild(emptyText);
+        modal.appendChild(section);
+        return;
+    }
+
+    const tagsContainer = document.createElement("div");
+    tagsContainer.style.display = "flex";
+    tagsContainer.style.flexWrap = "wrap";
+    tagsContainer.style.gap = "10px";
+    tagsContainer.style.marginBottom = "18px";
+
+    const tagButtonUpdaters = [];
+
+    tags.forEach((tag) => {
+        const tagButton = createQuickBlockModalButton("");
+
+        const updateTagButton = () => {
+            const isBlocked = findQuickBlockItemIndex(blockedParameter.blockedTag_Array, tag) !== -1;
+            setQuickBlockToggleButtonState(tagButton, isBlocked, tag, tag);
+        };
+
+        tagButton.addEventListener("click", () => {
+            const index = findQuickBlockItemIndex(blockedParameter.blockedTag_Array, tag);
+
+            if (index === -1) {
+                blockedParameter.blockedTag_Array.push(tag);
+            } else {
+                blockedParameter.blockedTag_Array.splice(index, 1);
+            }
+
+            updateTagButton();
+            saveQuickBlockSettingsAndRefresh();
+        });
+
+        updateTagButton();
+        tagButtonUpdaters.push(updateTagButton);
+        tagsContainer.appendChild(tagButton);
+    });
+
+    const addAllButton = createQuickBlockModalButton("一键全部添加标签");
+    addAllButton.style.background = "#558eff";
+    addAllButton.style.color = "#fff";
+
+    addAllButton.addEventListener("click", () => {
+        tags.forEach((tag) => {
+            if (findQuickBlockItemIndex(blockedParameter.blockedTag_Array, tag) === -1) {
+                blockedParameter.blockedTag_Array.push(tag);
+            }
+        });
+
+        tagButtonUpdaters.forEach((updateTagButton) => updateTagButton());
+        saveQuickBlockSettingsAndRefresh();
+
+        addAllButton.textContent = "已全部添加";
+        setTimeout(() => {
+            addAllButton.textContent = "一键全部添加标签";
+        }, 1000);
+    });
+
+    section.appendChild(tagsContainer);
+    section.appendChild(addAllButton);
+    modal.appendChild(section);
 }
 
 // 处理匹配的屏蔽标签
@@ -3104,6 +3537,9 @@ function FuckYouBilibiliRecommendationSystem() {
         if (!videoBv) {
             continue;
         }
+
+        // 添加快速屏蔽按钮
+        injectQuickBlockButton(videoElement, videoBv);
 
         // 是否启用 屏蔽标题
         if (blockedParameter.blockedTitle_Switch && blockedParameter.blockedTitle_Array.length > 0) {
